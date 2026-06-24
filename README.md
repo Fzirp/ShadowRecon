@@ -16,7 +16,7 @@ A lightweight, high-speed passive reconnaissance and web intelligence gathering 
 
 1. Clone the repository and navigate to the project directory:
 ```bash
-git clone [https://github.com/YOUR_USERNAME/ShadowRecon.git](https://github.com/YOUR_USERNAME/ShadowRecon.git)
+git clone (https://github.com/Fzirp/ShadowRecon.git)
 cd ShadowRecon
 ```
 Install the required network dependencies:
