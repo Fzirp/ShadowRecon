@@ -1,4 +1,4 @@
-# 🥷 ShadowRecon
+# 👾 ShadowRecon
 
 ![Python Version](https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12-blue)
 ![Security](https://img.shields.io/badge/recon-OSINT-red)
