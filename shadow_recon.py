@@ -1,43 +1,39 @@
+#!/usr/bin/env python3
 import requests
 import json
 import urllib3
 import time
-import ssl
-from requests.adapters import HTTPAdapter
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-class TLSAdapter(HTTPAdapter):
-    def init_poolmanager(self, *args, **kwargs):
-        context = ssl.create_default_context()
-        context.check_hostname = False
-        context.verify_mode = ssl.CERT_NONE
-        context.set_ciphers('DEFAULT@SECLEVEL=1')
-        kwargs['ssl_context'] = context
-        return super(TLSAdapter, self).init_poolmanager(*args, **kwargs)
-
 def get_server_details(target_domain):
     print(f"[*] Analyzing headers for: {target_domain}")
+    headers_to_check = ["Server", "X-Powered-By", "Content-Security-Policy"]
+    
+    # Strategy 1: Try standard HTTPS first
     try:
         url = f"https://www.{target_domain}"
-        session = requests.Session()
-        session.mount("https://", TLSAdapter())
-        
-        response = session.get(url, timeout=10, verify=False, headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"})
-        
-        headers = response.headers
-        server = headers.get("Server", "Unknown")
-        powered_by = headers.get("X-Powered-By", "Unknown")
-        security_policy = "Present" if "Content-Security-Policy" in headers else "Missing"
-        
+        response = requests.get(url, timeout=8, verify=False, headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"})
+        res_headers = response.headers
+        server = res_headers.get("Server", "Unknown")
+        powered_by = res_headers.get("X-Powered-By", "Unknown")
+        csp = "Present" if "Content-Security-Policy" in res_headers else "Missing"
         print(f"[+] Server Technology: {server}")
-        print(f"[+] Powered By: {powered_by}")
-        print(f"[+] Content Security Policy: {security_policy}")
-        
-        return {"server": server, "powered_by": powered_by, "csp": security_policy}
-    except Exception as e:
-        print(f"[-] Error retrieving headers: {e}")
-        return {"server": "Unknown", "powered_by": "Unknown", "csp": "Unknown"}
+        return {"server": server, "powered_by": powered_by, "csp": csp}
+    except Exception:
+        # Strategy 2: Fallback to HTTP if SSL/TLS handshakes fail
+        try:
+            url = f"http://www.{target_domain}"
+            response = requests.get(url, timeout=8, verify=False, headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"})
+            res_headers = response.headers
+            server = res_headers.get("Server", "Unknown")
+            powered_by = res_headers.get("X-Powered-By", "Unknown")
+            csp = "Present" if "Content-Security-Policy" in res_headers else "Missing"
+            print(f"[+] Server Technology (via HTTP Fallback): {server}")
+            return {"server": server, "powered_by": powered_by, "csp": csp}
+        except Exception as e:
+            print(f"[-] Infrastructure analysis failed completely: {e}")
+            return {"server": "Unknown", "powered_by": "Unknown", "csp": "Unknown"}
 
 def find_subdomains(target_domain):
     print(f"[*] Extracting subdomains for: {target_domain}")
@@ -79,6 +75,38 @@ def find_subdomains(target_domain):
         print("[-] Could not retrieve subdomains from public intelligence sources.")
         return []
 
+def get_dns_records(target_domain):
+    print(f"[*] Querying DNS records via HackerTarget for: {target_domain}")
+    dns_results = {}
+    try:
+        url = f"https://api.hackertarget.com/dnslookup/?q={target_domain}"
+        response = requests.get(url, timeout=10, headers={"User-Agent": "Mozilla/5.0"})
+        if response.status_code == 200 and "error" not in response.text.lower():
+            lines = response.text.split("\n")
+            for line in lines:
+                if not line.strip():
+                    continue
+                parts = line.split()
+                if len(parts) >= 2:
+                    # Categorize by common record types (A, MX, TXT, NS)
+                    r_type = "UNKNOWN"
+                    for t in ["A", "MX", "TXT", "NS", "CNAME", "AAAA"]:
+                        if t in parts or (t == "A" and any(c.isdigit() for c in parts[-1]) and len(parts)==2):
+                            r_type = t
+                            break
+                    if r_type not in dns_results:
+                        dns_results[r_type] = []
+                    dns_results[r_type].append(line.strip())
+            
+            for r_type, records in dns_results.items():
+                print(f"[+] Found {len(records)} {r_type} record(s).")
+            return dns_results
+    except Exception as e:
+        print(f"[-] Error querying DNS records: {e}")
+    
+    print("[-] No public DNS records captured.")
+    return {}
+
 def generate_google_dorks(target_domain):
     print(f"[*] Generating Google Dorking intelligence links for: {target_domain}")
     return {
@@ -88,11 +116,21 @@ def generate_google_dorks(target_domain):
         "Directory Indexing Vulnerabilities": f"https://www.google.com/search?q=site:{target_domain}+intext:%22index+of+%22"
     }
 
-def build_html_report(target_domain, infra, subs, dorks):
+def build_html_report(target_domain, infra, subs, dns, dorks):
     print("[*] Building cyber reconnaissance HTML report...")
     
     subs_li = "".join([f"<li>{sub}</li>" for sub in subs])
     dorks_li = "".join([f"<li><strong>{k}:</strong> <a href='{v}' target='_blank'>Execute Dork Search</a></li>" for k, v in dorks.items()])
+    
+    dns_html = ""
+    if dns:
+        for r_type, records in dns.items():
+            dns_html += f"<h3>{r_type} Records</h3><ul>"
+            for rec in records:
+                dns_html += f"<li><code>{rec}</code></li>"
+            dns_html += "</ul>"
+    else:
+        dns_html = "<p>No DNS records captured.</p>"
     
     html_content = f"""<!DOCTYPE html>
 <html>
@@ -101,13 +139,15 @@ def build_html_report(target_domain, infra, subs, dorks):
     <style>
         body {{ background-color: #0d1117; color: #c9d1d9; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; margin: 40px; }}
         h1 {{ color: #58a6ff; border-bottom: 1px solid #21262d; padding-bottom: 10px; }}
-        h2 {{ color: #7ee787; margin-top: 30px; }}
+        h2 {{ color: #7ee787; margin-top: 30px; border-bottom: 1px solid #30363d; padding-bottom: 5px; }}
+        h3 {{ color: #ff79c6; margin-top: 15px; font-size: 16px; }}
         .box {{ background-color: #161b22; padding: 20px; border-radius: 6px; border: 1px solid #30363d; margin-bottom: 20px; }}
         ul {{ list-style-type: square; }}
-        li {{ margin: 10px 0; }}
+        li {{ margin: 8px 0; }}
         a {{ color: #58a6ff; text-decoration: none; }}
         a:hover {{ text-decoration: underline; }}
         .meta {{ color: #8b949e; font-size: 14px; }}
+        code {{ background-color: #21262d; padding: 3px 6px; border-radius: 4px; font-family: monospace; color: #ff7b72; }}
     </style>
 </head>
 <body>
@@ -127,7 +167,12 @@ def build_html_report(target_domain, infra, subs, dorks):
     </div>
 
     <div class="box">
-        <h2>Phase 3: Active Google Dorking Vectors</h2>
+        <h2>Phase 3: DNS Intelligence Visualization</h2>
+        {dns_html}
+    </div>
+
+    <div class="box">
+        <h2>Phase 4: Active Google Dorking Vectors</h2>
         <ul>{dorks_li}</ul>
     </div>
 </body>
@@ -152,11 +197,14 @@ if __name__ == "__main__":
         print("\n--- PHASE 2: SUBDOMAIN DISCOVERY ---")
         subdomain_list = find_subdomains(target)
         
-        print("\n--- PHASE 3: GOOGLE DORKING AUTOMATION ---")
+        print("\n--- PHASE 3: DNS VISUALIZATION ---")
+        dns_data = get_dns_records(target)
+        
+        print("\n--- PHASE 4: GOOGLE DORKING AUTOMATION ---")
         dork_links = generate_google_dorks(target)
         
-        print("\n--- PHASE 4: GENERATING REPORT ---")
-        build_html_report(target, infra_data, subdomain_list, dork_links)
+        print("\n--- PHASE 5: GENERATING REPORT ---")
+        build_html_report(target, infra_data, subdomain_list, dns_data, dork_links)
         
         print("\n==================================================")
         print("[+] Recon Session Completed Successfully.")
